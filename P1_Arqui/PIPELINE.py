@@ -1,39 +1,23 @@
-import pygame
-from TEA_ISA import TEACPU 
-from TEA_PROGRAM import *
 
-# Configuración inicial de Pygame
-WIDTH, HEIGHT = 1200, 800
-BG_COLOR = (30, 30, 30)
-FONT_COLOR = (255, 255, 255)
-ACTIVE_COLOR = (50, 150, 50)
-INACTIVE_COLOR = (100, 100, 100)
-FONT_SIZE = 18
-PIPELINE_START_Y = 50
-REGISTER_START_Y = 250
-MEMORY_START_Y = 500
+from TEA_ISA import TEACPU
 
 
 class TEAPipeline(TEACPU):
     def __init__(self):
         super().__init__()
-        # Alias para compatibilidad con ISA _mov
+        # Alias para compatibilidad con el método _mov del ISA
         self.registers = self.reg
-        self.DELTA = 0x9E3779B9
-        # Inicializar pipeline stages e if_delay
+
+        # Pipeline stages: IF, ID, EX, MEM, WB
         self.pipeline = {stage: None for stage in ['IF', 'ID', 'EX', 'MEM', 'WB']}
         self.if_delay = False
-        self.screen, self.font = self.initialize_pygame()
-        self.clock = pygame.time.Clock()
-        self.addr_modes = self.addr_modes
-        
-    def initialize_pygame(self):
-        pygame.init()
-        screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("TEA PIPELINE")
-        return screen, pygame.font.Font(None, FONT_SIZE)
 
     def execute_cycle(self, program):
+        """
+        Ejecuta un ciclo del pipeline: WB → MEM → EX → ID → IF
+        program: lista de diccionarios con las instrucciones (tea_program).
+        """
+
         # --- WB stage ---
         if self.pipeline['WB']:
             self.write_back(self.pipeline['WB'])
@@ -43,6 +27,8 @@ class TEAPipeline(TEACPU):
         if self.pipeline['MEM']:
             mem_out = self.memory_access(self.pipeline['MEM'])
             if mem_out:
+                # Si la instrucción produce un resultado (por ejemplo LOAD_CRYPT o CRYPT_ROUND),
+                # lo copiamos a WB.
                 self.pipeline['WB'] = mem_out.copy()
             self.pipeline['MEM'] = None
 
@@ -51,15 +37,17 @@ class TEAPipeline(TEACPU):
             instr = self.pipeline['EX']
             decoded = self.decode_instruction(instr)
             self.execute_instruction(decoded)
-            # Pasa a MEM solo si produce resultado
+
+            # Solo pasamos a MEM si se generó 'dest' y 'result'
             if 'dest' in decoded and 'result' in decoded:
                 self.pipeline['MEM'] = decoded.copy()
+
             self.pipeline['EX'] = None
 
-            if decoded['opcode'] == 'CRYPT_LOOP' and self.reg[decoded['operands'][1]] > 0:
-                self.pipeline['IF'] = None
-                self.pipeline['ID'] = None
-                self.if_delay = False
+            #if decoded['opcode'] == 'CRYPT_LOOP' and self.reg[decoded['operands'][1]] > 0:
+            #    self.pipeline['IF'] = None
+            #    self.pipeline['ID'] = None
+            #    self.if_delay = False
 
             if self.pipeline['EX'] and self.pipeline['EX']['opcode'] == 'CRYPT_ROUND':
                 current_sum = self.reg['SUM']
@@ -76,14 +64,17 @@ class TEAPipeline(TEACPU):
 
         # --- IF → ID / Fetch ---
         if self.pipeline['IF'] and self.pipeline['ID'] is None:
+            # Mover de IF a ID
             self.pipeline['ID'] = self.pipeline['IF'].copy()
             self.pipeline['IF'] = None
-
+            self.if_delay = False
         elif not self.if_delay and self.reg['PC'] < len(program):
+            # Si no hay delay, hacemos fetch de la siguiente instrucción
             self.pipeline['IF'] = program[self.reg['PC']].copy()
             self.reg['PC'] += 1
             self.if_delay = True
         else:
+            # Desactivamos el delay para permitir el próximo fetch en el siguiente ciclo
             self.if_delay = False
 
     def write_back(self, instr):
@@ -93,77 +84,107 @@ class TEAPipeline(TEACPU):
 
     def memory_access(self, instr):
         """
-        Acceso a memoria usando instrucciones decodificadas.
-        Usa 'operands' para extraer registers/modes.
+        Acceso a memoria para LOAD_CRYPT y STORE_CRYPT.
+        Usa instr['operands'] para extraer [Rd, mode] o [Rs, mode].
         """
         opcode = instr.get('opcode')
-        # operands: [Rd, mode] or [Rs, mode]
+
         if opcode == 'LOAD_CRYPT':
             rd, mode = instr['operands']
             mode_type, offset = mode
             addr = self.addr_modes[mode_type](offset)
             instr['dest'] = rd
-            instr['result'] = self.memory[addr // 4]
+            instr['result'] = self.memory[addr // 4] & 0xFFFFFFFF
             return instr
+
         elif opcode == 'STORE_CRYPT':
             rs, mode = instr['operands']
             mode_type, offset = mode
             addr = self.addr_modes[mode_type](offset)
-            self.memory[addr // 4] = self.reg[rs]
+            self.memory[addr // 4] = self.reg[rs] & 0xFFFFFFFF
             return None
+
         else:
+            # Para instrucciones que no tocan memoria, devolvemos el mismo instr
             return instr
 
     def execute_instruction(self, instr):
+        """
+        Ejecuta una instrucción decodificada (instr ya fue obtenida por decode_instruction)
+        y captura 'dest'/'result' cuando corresponda.
+        """
         opcode = instr['opcode']
         ops = instr['operands']
-        # Ejecuta usando el ISA
+
+        # Llama a la rutina de ejecución del ISA
         super().execute([opcode] + ops)
-        # Capturar dest/result
+
+        # Después de ejecutar, capturamos el registro destino y su valor
         if opcode == 'MOV':
             rd = ops[0]
             instr['dest'] = rd
-            instr['result'] = self.reg[rd]
+            instr['result'] = self.reg[rd] & 0xFFFFFFFF
+
         elif opcode == 'LOAD_CRYPT':
             rd = ops[0]
             instr['dest'] = rd
-            instr['result'] = self.reg[rd]
+            instr['result'] = self.reg[rd] & 0xFFFFFFFF
+
         elif opcode in ('TEA_SBOX', 'TEA_MIX'):
             rd = ops[0]
             instr['dest'] = rd
-            instr['result'] = self.reg[rd]
+            instr['result'] = self.reg[rd] & 0xFFFFFFFF
+
         elif opcode == 'CRYPT_ROUND':
-            # Registrar acumulador SUM tras la ronda
-            #print(f"[execute_instruction] SUM actualizado en EX: {hex(self.reg['SUM'])}")
-            #instr['dest'] = 'SUM'
-            #instr['result'] = self.reg['SUM']
-            pass
-        # STORE_CRYPT no pasan resultado a MEM
+            # En cada CRYPT_ROUND actualizamos el acumulador SUM internamente en _crypt_round().
+            # Aquí capturamos ese valor para escribirlo en WB.
+            instr['dest'] = 'SUM'
+            instr['result'] = self.reg['SUM'] & 0xFFFFFFFF
+
+        # STORE_CRYPT no genera resultado que pase a WB, así que no hacemos nada más.
 
     def decode_instruction(self, raw_instr):
+        """
+        Convierte la instrucción en crudo (raw_instr) a un dict with:
+          { 'opcode': ..., 'operands': [...] }
+        usando self.isa[...] y el mapeo de campos.
+        """
         opcode = raw_instr['opcode']
         decoded = {'opcode': opcode, 'operands': []}
+
         if opcode == 'MOV':
-            decoded['operands'] = [raw_instr['dest'], f"#{raw_instr['value']}"]
+            # MOV Rd, #IMM
+            decoded['operands'] = [ raw_instr['dest'], f"#{raw_instr['value']}" ]
+
         elif opcode == 'LOAD_CRYPT':
-            decoded['operands'] = [raw_instr['dest'], raw_instr['mode']]
+            # LOAD_CRYPT Rd, [modo]
+            decoded['operands'] = [ raw_instr['dest'], raw_instr['mode'] ]
+
         elif opcode == 'STORE_CRYPT':
-            decoded['operands'] = [raw_instr['src'], raw_instr['mode']]
+            # STORE_CRYPT Rs, [modo]
+            decoded['operands'] = [ raw_instr['src'], raw_instr['mode'] ]
+
         elif opcode == 'CRYPT_ROUND':
-            # Aquí convertimos Kptr (nombre de registro) en dirección de memoria
+            # CRYPT_ROUND V0, V1, Kptr, Dir
             rd_v0 = raw_instr['v0']
             rd_v1 = raw_instr['v1']
-            kptr_addr = self.reg[raw_instr['kptr']]
-            direction = int(raw_instr['dir'])  
+            kptr_addr = self.reg[ raw_instr['kptr'] ]     # resolvemos la dirección entera
+            direction = int(raw_instr['dir'])
             decoded['operands'] = [rd_v0, rd_v1, kptr_addr, direction]
+
         elif opcode in ('TEA_SBOX', 'TEA_MIX', 'CRYPT_LOOP'):
-            # Mapea names de fmt a claves de raw_instr
+            # Mapeo dinámico gracias a fmt en self.isa
             fmt = self.isa[opcode]['fmt']
-            # Diccionario de mapeo de fmt->raw_instr keys
             field_map = {
-                'Rd': 'dest', 'Rs': 'src', 'Rs1': 'src1', 'Rs2': 'src2',
-                'Imm': 'imm', 'Imm/Reg': 'value', 'AddrMode': 'mode',
-                'Label': 'label', 'Reg': 'reg'
+                'Rd':        'dest',
+                'Rs':        'src',
+                'Rs1':       'src1',
+                'Rs2':       'src2',
+                'Imm':       'imm',
+                'Imm/Reg':   'value',
+                'AddrMode':  'mode',
+                'Label':     'label',
+                'Reg':       'reg'
             }
             ops = []
             for name in fmt:
@@ -174,7 +195,7 @@ class TEAPipeline(TEACPU):
                     raise KeyError(f"Falta el campo '{key}' en la instrucción {raw_instr}")
                 ops.append(raw_instr[key])
             decoded['operands'] = ops
-            return decoded
+
         else:
             raise ValueError(f"Decode: opcode desconocido {opcode}")
 
@@ -191,88 +212,5 @@ class TEAPipeline(TEACPU):
                 self.pipeline['IF'] = None
             self.if_delay = False
 
-    def draw_pipeline(self):
-        stages = ["IF", "ID", "EX", "MEM", "WB"]
-        block_width, block_height = 200, 60
-        spacing = 30
-        
-        for i, stage in enumerate(stages):
-            x = 50 + i * (block_width + spacing)
-            color = ACTIVE_COLOR if self.pipeline[stage] else INACTIVE_COLOR
-            pygame.draw.rect(self.screen, color, (x, PIPELINE_START_Y, block_width, block_height))
-            
-            instr = self.pipeline[stage]
-            text = f"{stage}: {instr['opcode'] if instr else 'Vacío'}"
-            if instr and 'mode' in instr and instr['mode']:
-                text += f" [{instr['mode'][0]}]"
-            text_surface = self.font.render(text, True, FONT_COLOR)
-            self.screen.blit(text_surface, (x + 10, PIPELINE_START_Y + 15))
-
-    def draw_registers(self):
-        y = REGISTER_START_Y
-        text = self.font.render("Seccion de Registros:", True, FONT_COLOR)
-        self.screen.blit(text, (50, y-45))
-        columns = [
-            ['V0', 'V1', 'T0', 'T1'],
-            ['K0', 'K1', 'K2', 'K3'],
-            ['CTR', 'SUM', 'KEYPTR', 'DATAPTR']
-        ]
-        
-        for col_idx, col in enumerate(columns):
-            x = 50 + col_idx * 250
-            for i, reg in enumerate(col):
-                text = f"{reg}: {self.reg[reg]:08x}"
-                text_surface = self.font.render(text, True, FONT_COLOR)
-                self.screen.blit(text_surface, (x, y + i * 30))
-
-    def draw_memory(self):
-        y = MEMORY_START_Y
-        text = self.font.render("Seccion de Memoria:", True, FONT_COLOR)
-        self.screen.blit(text, (50, y))
-        
-        for i in range(8):
-            addr = i * 4
-            text = f"[{addr:04x}]: {self.memory[i]:08x}"
-            text_surface = self.font.render(text, True, FONT_COLOR)
-            self.screen.blit(text_surface, (50 + (i % 4) * 250, y + 30 + (i // 4) * 30))
-
-    def run_simulation(self, program):
-        """Ejecuta simulación del pipeline hasta vaciarlo"""
-        running = True
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                    self.execute_cycle(program)
-            # continúa corriendo mientras haya etapas ocupadas o insn por fetch
-            if not any(self.pipeline.values()) and self.reg['PC'] >= len(program):
-                running = False
-            self.screen.fill((30, 30, 30))
-            self.draw_pipeline()
-            self.draw_registers()
-            self.draw_memory()
-            pygame.display.flip()
-            self.clock.tick(30)
-        print(f"SUM final = 0x{self.reg['SUM']:08X}")
-        pygame.quit()
 
 
-if __name__ == "__main__":
-    pipeline = TEAPipeline()
-    
-    # Configurar estado inicial
-    pipeline.reg['DATAPTR'] = 0x200  # Dirección de datos
-    pipeline.reg['KEYPTR'] = 0x100    # Dirección de clave
-    
-    # Cargar datos de ejemplo
-    pipeline.memory[0x100//4] = 0x12345678  # key[0]
-    pipeline.memory[0x104//4] = 0x9ABCDEF0  # key[1]
-    pipeline.memory[0x200//4] = 0x01234567  # v0
-    pipeline.memory[0x204//4] = 0x89ABCDEF  # v1
-
-    # Carga el programa 
-    pipeline.load_program(tea_program)
-
-    # Simulación en pipeline
-    pipeline.run_simulation(tea_program)
