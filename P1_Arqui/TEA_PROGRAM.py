@@ -158,3 +158,26 @@ tea_program2 = [
         'dir': 1
     }
 ]
+
+vault_test_program = [
+    # MOV valores a K0–K3
+    { 'opcode': 'MOV', 'dest': 'K0', 'value': 0x11111111 },
+    { 'opcode': 'MOV', 'dest': 'K1', 'value': 0x22222222 },
+    { 'opcode': 'MOV', 'dest': 'K2', 'value': 0x33333333 },
+    { 'opcode': 'MOV', 'dest': 'K3', 'value': 0x44444444 },
+
+    # Guardar la clave
+    { 'opcode': 'STORE_KEY', 'index': 0, 'k0': 'K0', 'k1': 'K1', 'k2': 'K2', 'k3': 'K3' },
+
+    # Borrar registros
+    { 'opcode': 'MOV', 'dest': 'K0', 'value': 0 },
+    { 'opcode': 'MOV', 'dest': 'K1', 'value': 0 },
+    { 'opcode': 'MOV', 'dest': 'K2', 'value': 0 },
+    { 'opcode': 'MOV', 'dest': 'K3', 'value': 0 },
+
+    # Recuperar clave
+    { 'opcode': 'LOAD_KEY', 'index': 0 },
+
+    # Instrucción adicional que obliga a procesar LOAD_KEY
+    { 'opcode': 'MOV', 'dest': 'T0', 'value': 12345678 }
+]

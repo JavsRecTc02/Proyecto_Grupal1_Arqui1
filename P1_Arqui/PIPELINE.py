@@ -1,5 +1,6 @@
 
 from TEA_ISA import TEACPU
+from vault import Vault
 
 
 class TEAPipeline(TEACPU):
@@ -7,6 +8,7 @@ class TEAPipeline(TEACPU):
         super().__init__()
         # Alias para compatibilidad con el método _mov del ISA
         self.registers = self.reg
+        self.vault = Vault() # boveda
 
         # Pipeline stages: IF, ID, EX, MEM, WB
         self.pipeline = {stage: None for stage in ['IF', 'ID', 'EX', 'MEM', 'WB']}
@@ -154,37 +156,51 @@ class TEAPipeline(TEACPU):
 
         if opcode == 'MOV':
             # MOV Rd, #IMM
-            decoded['operands'] = [ raw_instr['dest'], f"#{raw_instr['value']}" ]
+            decoded['operands'] = [raw_instr['dest'], f"#{raw_instr['value']}"]
 
         elif opcode == 'LOAD_CRYPT':
             # LOAD_CRYPT Rd, [modo]
-            decoded['operands'] = [ raw_instr['dest'], raw_instr['mode'] ]
+            decoded['operands'] = [raw_instr['dest'], raw_instr['mode']]
 
         elif opcode == 'STORE_CRYPT':
             # STORE_CRYPT Rs, [modo]
-            decoded['operands'] = [ raw_instr['src'], raw_instr['mode'] ]
+            decoded['operands'] = [raw_instr['src'], raw_instr['mode']]
 
         elif opcode == 'CRYPT_ROUND':
             # CRYPT_ROUND V0, V1, Kptr, Dir
             rd_v0 = raw_instr['v0']
             rd_v1 = raw_instr['v1']
-            kptr_addr = self.reg[ raw_instr['kptr'] ]     # resolvemos la dirección entera
+            kptr_addr = self.reg[raw_instr['kptr']]  # resolvemos la dirección entera
             direction = int(raw_instr['dir'])
             decoded['operands'] = [rd_v0, rd_v1, kptr_addr, direction]
+
+        elif opcode == 'LOAD_KEY':
+            # Cargar clave desde bóveda a K0-K3
+            decoded['operands'] = [raw_instr['index']]
+
+        elif opcode == 'STORE_KEY':
+            # Guardar K0-K3 en la bóveda
+            decoded['operands'] = [
+                raw_instr['index'],
+                raw_instr['k0'],
+                raw_instr['k1'],
+                raw_instr['k2'],
+                raw_instr['k3']
+            ]
 
         elif opcode in ('TEA_SBOX', 'TEA_MIX', 'CRYPT_LOOP'):
             # Mapeo dinámico gracias a fmt en self.isa
             fmt = self.isa[opcode]['fmt']
             field_map = {
-                'Rd':        'dest',
-                'Rs':        'src',
-                'Rs1':       'src1',
-                'Rs2':       'src2',
-                'Imm':       'imm',
-                'Imm/Reg':   'value',
-                'AddrMode':  'mode',
-                'Label':     'label',
-                'Reg':       'reg'
+                'Rd': 'dest',
+                'Rs': 'src',
+                'Rs1': 'src1',
+                'Rs2': 'src2',
+                'Imm': 'imm',
+                'Imm/Reg': 'value',
+                'AddrMode': 'mode',
+                'Label': 'label',
+                'Reg': 'reg'
             }
             ops = []
             for name in fmt:

@@ -28,6 +28,7 @@ Formato fijo de 32 bits:
 [8b opcode][4b dest][4b src1][4b src2][12b inmediate/modo]
 
 """
+from vault import Vault
 
 
 class TEACPU:
@@ -46,6 +47,7 @@ class TEACPU:
         # ------------------------------------------
         # Registros Especializados (32 bits)
         # ------------------------------------------
+        self.vault = Vault()# para la llave
 
         self.DELTA = 0x9E3779B9
 
@@ -120,7 +122,18 @@ class TEACPU:
         'MOV': {
             'fmt': ('Rd', 'Imm/Reg'),
             'exec': lambda dst, src: self._mov(dst, src)
+        },
+
+        # Instrucciones de Bóveda de Llaves
+        'LOAD_KEY': {
+            'fmt': ('Idx',),
+            'exec': lambda idx: self._load_key(idx)
+        },
+        'STORE_KEY': {  # Sólo para pruebas, no debe usarse en el ejecutable final
+            'fmt': ('Idx', 'K0', 'K1', 'K2', 'K3'),
+            'exec': lambda idx, k0, k1, k2, k3: self._store_key(idx, k0, k1, k2, k3)
         }
+
     }
         
     # ==================== CARGAR PROGRAMA AL ISA ====================    
@@ -226,6 +239,37 @@ class TEACPU:
         if isinstance(op, str) and op.startswith('#'):
             return int(op[1:], 0)
         return op
+
+    # ==================== BÓVEDA DE LLAVES ====================
+
+    def _load_key(self, index):
+        """
+        Carga una clave desde la bóveda al conjunto de registros K0-K3.
+        Solo accesible mediante instrucción LOAD_KEY.
+        """
+        if not isinstance(index, int) or not (0 <= index < 4):
+            raise ValueError(f"Índice inválido para LOAD_KEY: {index}")
+        k0, k1, k2, k3 = self.vault.load_key(index)
+        self.reg['K0'] = k0
+        self.reg['K1'] = k1
+        self.reg['K2'] = k2
+        self.reg['K3'] = k3
+
+    def _store_key(self, index, k0, k1, k2, k3):
+        """
+        Guarda una clave en la bóveda desde los valores en registros K0–K3.
+        Esta instrucción es opcional y puede usarse solo en fase de pruebas.
+        """
+        if not isinstance(index, int) or not (0 <= index < 4):
+            raise ValueError(f"Índice inválido para STORE_KEY: {index}")
+        self.vault.store_key(
+            index,
+            self.reg[k0],
+            self.reg[k1],
+            self.reg[k2],
+            self.reg[k3]
+        )
+
     
 
 

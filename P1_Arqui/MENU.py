@@ -1,7 +1,9 @@
 
 import pygame
-from TEA_PROGRAM import tea_program, tea_program2
-from PIPELINE_gui import run_pipeline  
+from TEA_PROGRAM import tea_program, tea_program2, vault_test_program
+from PIPELINE_gui import run_pipeline
+
+
 
 # ----------------- Constantes de la interfaz gráfica -----------------
 MENU_WIDTH, MENU_HEIGHT = 600, 600
@@ -31,7 +33,7 @@ def draw_button(screen, font, text, rect, mouse_pos):
     screen.blit(text_surf, text_rect)
 
 
-def main_menu():
+def main_menu(vaul_test_program=None):
     pygame.init()
     screen = pygame.display.set_mode((MENU_WIDTH, MENU_HEIGHT))
     pygame.display.set_caption("TEA Algorithm")
@@ -73,7 +75,7 @@ def main_menu():
                     return
                 elif decrypt_rect.collidepoint(mouse_pos):
                     pygame.quit()
-                    run_pipeline(tea_program2)
+                    run_pipeline(vault_test_program)
                     return
 
         # Dibujado de fondo y componentes
@@ -94,3 +96,4 @@ def main_menu():
 
 if __name__ == "__main__":
     main_menu()
+

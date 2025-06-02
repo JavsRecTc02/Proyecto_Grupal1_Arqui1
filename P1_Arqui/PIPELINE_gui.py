@@ -2,6 +2,7 @@
 import pygame
 from PIPELINE import TEAPipeline
 #from TEA_PROGRAM import tea_program
+from TEA_PROGRAM import vault_test_program
 
 # ----------------- Constantes de la interfaz gráfica (para el pipeline) -----------------
 WIDTH, HEIGHT       = 1200, 800
@@ -65,6 +66,17 @@ def draw_memory(screen, font, pipeline):
         text_surf = font.render(text, True, FONT_COLOR)
         screen.blit(text_surf, (50 + (i % 4) * 250, y + 30 + (i // 4) * 30))
 
+def draw_vault(screen, font, pipeline):
+    start_y = MEMORY_START_Y + 120  # un poco debajo de la memoria
+    header = font.render("Bóveda de Claves (Vault):", True, FONT_COLOR)
+    screen.blit(header, (50, start_y))
+
+    for slot_index, key in enumerate(pipeline.vault.slots):
+        slot_text = f"Slot {slot_index}: " + "  ".join([f"{word:08X}" for word in key])
+        slot_surf = font.render(slot_text, True, FONT_COLOR)
+        screen.blit(slot_surf, (50, start_y + 30 + slot_index * 30))
+
+
 
 def run_pipeline(program):
     
@@ -107,6 +119,7 @@ def run_pipeline(program):
         draw_pipeline(screen, font, pipeline)
         draw_registers(screen, font, pipeline)
         draw_memory(screen, font, pipeline)
+        draw_vault(screen, font, pipeline)
 
         # ------------------ BARRA DE PROGRESO ------------------
         # Cálculo del porcentaje de instrucciones "fetched" (PC / len)
