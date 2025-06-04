@@ -164,28 +164,61 @@ class TEACPU:
         term2 = (self.reg[rs2] >> 5) + imm
         self.reg[rd] ^= (term1 ^ term2) & 0xFFFFFFFF
 
-    def _crypt_round(self, v0, v1, kptr, direction):
-        """Ejecuta una ronda completa de cifrado/descifrado"""
-        print(f"[TEA] SUM antes: {hex(self.reg['SUM'])}")
-        if direction == 1:  # Cifrado
-            self.reg['SUM'] = (self.reg['SUM'] + self.DELTA) & 0xFFFFFFFF
-            self._tea_sbox('T0', v1, 'K0')
-            self._tea_mix(v0, 'T0', v1, self.memory[kptr+1])
-            self.reg[v0] = (self.reg[v0] + self.reg['T0']) & 0xFFFFFFFF
-            
-            self._tea_sbox('T1', v0, 'K2')
-            self._tea_mix(v1, 'T1', v0, self.memory[kptr+3])
-            self.reg[v1] = (self.reg[v1] + self.reg['T1']) & 0xFFFFFFFF
-        else:  # Descifrado
-            self._tea_sbox('T1', v0, 'K2')
-            self._tea_mix(v1, 'T1', v0, self.memory[kptr+3])
-            self.reg[v1] = (self.reg[v1] - self.reg['T1']) & 0xFFFFFFFF
-            
-            self._tea_sbox('T0', v1, 'K0')
-            self._tea_mix(v0, 'T0', v1, self.memory[kptr+1])
-            self.reg[v0] = (self.reg[v0] - self.reg['T0']) & 0xFFFFFFFF
-            self.reg['SUM'] = (self.reg['SUM'] - self.DELTA) & 0xFFFFFFFF
-        print(f"[TEA] SUM después: {hex(self.reg['SUM'])}")
+    def _crypt_round(self, v0_reg, v1_reg, kptr, direction):
+        """
+        Ejecuta una única ronda de TEA.
+        v0_reg, v1_reg: cadenas 'V0' y 'V1'
+        kptr: (no lo usamos porque cargamos K0..K3 en registros directamente)
+        direction: 1 = cifrar, 0 = descifrar
+        """
+        # Extraer valores de registro
+        v0 = self.reg[v0_reg]
+        v1 = self.reg[v1_reg]
+        k0 = self.reg['K0']
+        k1 = self.reg['K1']
+        k2 = self.reg['K2']
+        k3 = self.reg['K3']
+        mask32 = 0xFFFFFFFF
+
+        sum_val = self.reg['SUM']  # suma acumulada hasta justo antes de esta ronda
+
+        if direction == 1:
+            # CIFRADO: primero incrementar sum
+            sum_val = (sum_val + self.DELTA) & mask32
+
+            # v0 += ((v1 << 4) + k0) ^ (v1 + sum) ^ ((v1 >> 5) + k1)
+            t0 = ((v1 << 4) + k0) & mask32
+            t1 = (v1 + sum_val) & mask32
+            t2 = ((v1 >> 5) + k1) & mask32
+            v0 = (v0 + (t0 ^ t1 ^ t2)) & mask32
+
+            # v1 += ((v0 << 4) + k2) ^ (v0 + sum) ^ ((v0 >> 5) + k3)
+            t0 = ((v0 << 4) + k2) & mask32
+            t1 = (v0 + sum_val) & mask32
+            t2 = ((v0 >> 5) + k3) & mask32
+            v1 = (v1 + (t0 ^ t1 ^ t2)) & mask32
+
+        else:
+            # DESCIFRADO: primero restar de v1/v0 usando sum
+            t0 = ((v0 << 4) + k2) & mask32
+            t1 = (v0 + sum_val) & mask32
+            t2 = ((v0 >> 5) + k3) & mask32
+            v1 = (v1 - (t0 ^ t1 ^ t2)) & mask32
+
+            t0 = ((v1 << 4) + k0) & mask32
+            t1 = (v1 + sum_val) & mask32
+            t2 = ((v1 >> 5) + k1) & mask32
+            v0 = (v0 - (t0 ^ t1 ^ t2)) & mask32
+
+            # luego decrementamos sum
+            sum_val = (sum_val - self.DELTA) & mask32
+
+        # Guardar retornos
+        self.reg[v0_reg] = v0
+        self.reg[v1_reg] = v1
+        self.reg['SUM'] = sum_val
+
+
 
     # ==================== ACCESO A MEMORIA  ====================
     def _load_crypt(self, rd, mode):

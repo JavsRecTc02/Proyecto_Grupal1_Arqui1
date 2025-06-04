@@ -1,4 +1,3 @@
-
 from TEA_ISA import TEACPU
 from vault import Vault
 
@@ -6,20 +5,25 @@ from vault import Vault
 class TEAPipeline(TEACPU):
     def __init__(self):
         super().__init__()
-        # Alias para compatibilidad con el método _mov del ISA
+        # Alias para compatibilidad con _mov del ISA
         self.registers = self.reg
-        self.vault = Vault() # boveda
+        self.vault = Vault()
 
-        # Pipeline stages: IF, ID, EX, MEM, WB
+        # Inicializamos las etapas del pipeline
         self.pipeline = {stage: None for stage in ['IF', 'ID', 'EX', 'MEM', 'WB']}
         self.if_delay = False
 
+        # Ajustamos DATAPTR = 0 para que STORE_CRYPT ('DATA_IDX', offset) vaya a memory[offset]
+        self.reg['DATAPTR'] = 0
+        # Dejamos KEYPTR = 0x100 sólo en caso de que alguna instrucción LOAD_CRYPT
+        # necesite leer clave de alguna posición, pero en nuestro flujo no lo usamos.
+        self.reg['KEYPTR'] = 0x100
+
+
     def execute_cycle(self, program):
         """
-        Ejecuta un ciclo del pipeline: WB → MEM → EX → ID → IF
-        program: lista de diccionarios con las instrucciones del programa cargado.
+        WB → MEM → EX → ID → IF
         """
-
         # --- WB stage ---
         if self.pipeline['WB']:
             self.write_back(self.pipeline['WB'])
@@ -29,8 +33,6 @@ class TEAPipeline(TEACPU):
         if self.pipeline['MEM']:
             mem_out = self.memory_access(self.pipeline['MEM'])
             if mem_out:
-                # Si la instrucción produce un resultado (por ejemplo LOAD_CRYPT o CRYPT_ROUND),
-                # lo copiamos a WB.
                 self.pipeline['WB'] = mem_out.copy()
             self.pipeline['MEM'] = None
 
@@ -40,24 +42,11 @@ class TEAPipeline(TEACPU):
             decoded = self.decode_instruction(instr)
             self.execute_instruction(decoded)
 
-            # Solo pasamos a MEM si se generó 'dest' y 'result'
+            # Pasar a MEM si 'dest' y 'result' existen
             if 'dest' in decoded and 'result' in decoded:
                 self.pipeline['MEM'] = decoded.copy()
 
             self.pipeline['EX'] = None
-
-            #if decoded['opcode'] == 'CRYPT_LOOP' and self.reg[decoded['operands'][1]] > 0:
-            #    self.pipeline['IF'] = None
-            #    self.pipeline['ID'] = None
-            #    self.if_delay = False
-
-            if self.pipeline['EX'] and self.pipeline['EX']['opcode'] == 'CRYPT_ROUND':
-                current_sum = self.reg['SUM']
-                # Actualizar cualquier etapa que necesite SUM
-                if self.pipeline['MEM'] and 'SUM' in self.pipeline['MEM'].get('operands', []):
-                    self.pipeline['MEM']['result'] = current_sum
-                if self.pipeline['WB'] and 'SUM' in self.pipeline['WB'].get('operands', []):
-                    self.pipeline['WB']['result'] = current_sum
 
         # --- ID → EX ---
         if self.pipeline['ID'] and self.pipeline['EX'] is None:
@@ -66,28 +55,28 @@ class TEAPipeline(TEACPU):
 
         # --- IF → ID / Fetch ---
         if self.pipeline['IF'] and self.pipeline['ID'] is None:
-            # Mover de IF a ID
             self.pipeline['ID'] = self.pipeline['IF'].copy()
             self.pipeline['IF'] = None
             self.if_delay = False
+
         elif not self.if_delay and self.reg['PC'] < len(program):
-            # Si no hay delay, hacemos fetch de la siguiente instrucción
             self.pipeline['IF'] = program[self.reg['PC']].copy()
             self.reg['PC'] += 1
             self.if_delay = True
+
         else:
-            # Desactivamos el delay para permitir el próximo fetch en el siguiente ciclo
             self.if_delay = False
+
 
     def write_back(self, instr):
         if 'dest' in instr and 'result' in instr:
-            print(f"WB: Escribiendo {instr['result']} en {instr['dest']}")
-            self.reg[instr['dest']] = instr['result']
+            print(f"WB: Escribiendo {instr['result']:08X} en {instr['dest']}")
+            self.reg[instr['dest']] = instr['result'] & 0xFFFFFFFF
+
 
     def memory_access(self, instr):
         """
-        Acceso a memoria para LOAD_CRYPT y STORE_CRYPT.
-        Usa instr['operands'] para extraer [Rd, mode] o [Rs, mode].
+        LOAD_CRYPT y STORE_CRYPT: utiliza instr['operands'] = [reg, (modo, offset)].
         """
         opcode = instr.get('opcode')
 
@@ -107,21 +96,20 @@ class TEAPipeline(TEACPU):
             return None
 
         else:
-            # Para instrucciones que no tocan memoria, devolvemos el mismo instr
             return instr
+
 
     def execute_instruction(self, instr):
         """
-        Ejecuta una instrucción decodificada (instr ya fue obtenida por decode_instruction)
-        y captura 'dest'/'result' cuando corresponda.
+        Ejecuta la instrucción decodificada (opcode + operands) y captura 'dest'/'result'.
         """
         opcode = instr['opcode']
         ops = instr['operands']
 
-        # Llama a la rutina de ejecución del ISA
+        # Ejecutar la instrucción a nivel de ISA
         super().execute([opcode] + ops)
 
-        # Después de ejecutar, capturamos el registro destino y su valor
+        # A continuación, si corresponde, marcamos dest/result para pasar a MEM/WB:
         if opcode == 'MOV':
             rd = ops[0]
             instr['dest'] = rd
@@ -138,48 +126,39 @@ class TEAPipeline(TEACPU):
             instr['result'] = self.reg[rd] & 0xFFFFFFFF
 
         elif opcode == 'CRYPT_ROUND':
-            # En cada CRYPT_ROUND actualizamos el acumulador SUM internamente en _crypt_round().
-            # Aquí capturamos ese valor para escribirlo en WB.
             instr['dest'] = 'SUM'
             instr['result'] = self.reg['SUM'] & 0xFFFFFFFF
 
-        # STORE_CRYPT no genera resultado que pase a WB, así que no hacemos nada más.
+        # STORE_CRYPT no genera resultado para WB.
+
 
     def decode_instruction(self, raw_instr):
         """
-        Convierte la instrucción en crudo (raw_instr) a un dict with:
-          { 'opcode': ..., 'operands': [...] }
-        usando self.isa[...] y el mapeo de campos.
+        Traduce raw_instr en { 'opcode': ..., 'operands': [...] } según self.isa.
         """
         opcode = raw_instr['opcode']
         decoded = {'opcode': opcode, 'operands': []}
 
         if opcode == 'MOV':
-            # MOV Rd, #IMM
             decoded['operands'] = [raw_instr['dest'], f"#{raw_instr['value']}"]
 
         elif opcode == 'LOAD_CRYPT':
-            # LOAD_CRYPT Rd, [modo]
             decoded['operands'] = [raw_instr['dest'], raw_instr['mode']]
 
         elif opcode == 'STORE_CRYPT':
-            # STORE_CRYPT Rs, [modo]
             decoded['operands'] = [raw_instr['src'], raw_instr['mode']]
 
         elif opcode == 'CRYPT_ROUND':
-            # CRYPT_ROUND V0, V1, Kptr, Dir
             rd_v0 = raw_instr['v0']
             rd_v1 = raw_instr['v1']
-            kptr_addr = self.reg[raw_instr['kptr']]  # resolvemos la dirección entera
+            kptr_addr = self.reg[raw_instr['kptr']]
             direction = int(raw_instr['dir'])
             decoded['operands'] = [rd_v0, rd_v1, kptr_addr, direction]
 
         elif opcode == 'LOAD_KEY':
-            # Cargar clave desde bóveda a K0-K3
             decoded['operands'] = [raw_instr['index']]
 
         elif opcode == 'STORE_KEY':
-            # Guardar K0-K3 en la bóveda
             decoded['operands'] = [
                 raw_instr['index'],
                 raw_instr['k0'],
@@ -189,7 +168,6 @@ class TEAPipeline(TEACPU):
             ]
 
         elif opcode in ('TEA_SBOX', 'TEA_MIX', 'CRYPT_LOOP'):
-            # Mapeo dinámico gracias a fmt en self.isa
             fmt = self.isa[opcode]['fmt']
             field_map = {
                 'Rd': 'dest',
@@ -217,7 +195,11 @@ class TEAPipeline(TEACPU):
 
         return decoded
 
+
     def instruction_fetch(self, program):
+        """
+        Mueve de IF → ID, o hace fetch de la instrucción en PC.
+        """
         if not self.if_delay and self.reg['PC'] < len(program):
             self.pipeline['IF'] = program[self.reg['PC']].copy()
             self.reg['PC'] += 1
@@ -227,6 +209,3 @@ class TEAPipeline(TEACPU):
                 self.pipeline['ID'] = self.pipeline['IF'].copy()
                 self.pipeline['IF'] = None
             self.if_delay = False
-
-
-
