@@ -5,7 +5,7 @@ from vault import Vault
 class TEAPipeline(TEACPU):
     def __init__(self):
         super().__init__()
-        # Alias para compatibilidad con _ASN del ISA
+        # Alias para compatibilidad con _mov del ISA
         self.registers = self.reg
         self.vault = Vault()
 
@@ -110,7 +110,7 @@ class TEAPipeline(TEACPU):
         super().execute([opcode] + ops)
 
         # A continuación, si corresponde, marcamos dest/result para pasar a MEM/WB:
-        if opcode == 'ASN':
+        if opcode == 'MOV':
             rd = ops[0]
             instr['dest'] = rd
             instr['result'] = self.reg[rd] & 0xFFFFFFFF
@@ -139,7 +139,7 @@ class TEAPipeline(TEACPU):
         opcode = raw_instr['opcode']
         decoded = {'opcode': opcode, 'operands': []}
 
-        if opcode == 'ASN':
+        if opcode == 'MOV':
             decoded['operands'] = [raw_instr['dest'], f"#{raw_instr['value']}"]
 
         elif opcode == 'LOAD_CRYPT':

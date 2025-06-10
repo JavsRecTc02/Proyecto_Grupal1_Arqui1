@@ -39,7 +39,7 @@ def draw_registers(screen, font, pipeline):
     columns = [
         ['V0', 'V1', 'T0', 'T1'],
         ['K0', 'K1', 'K2', 'K3'],
-        ['CTR', 'SUM']
+        ['CTR', 'SUM', 'KEYPTR', 'DATAPTR']
     ]
 
     for col_idx, col in enumerate(columns):
@@ -51,9 +51,9 @@ def draw_registers(screen, font, pipeline):
             screen.blit(text_surf, (x, y + i * 30))
 
 def draw_memory(screen, font, pipeline):
-    y = MEMORY_START_Y - 100
+    y = MEMORY_START_Y
     header = font.render("Direcciones de Memoria:", True, FONT_COLOR)
-    screen.blit(header, (50, y - 10))
+    screen.blit(header, (50, y))
 
     # Ahora limitamos a lo que realmente contenga pipeline.memory para evitar IndexError
     max_to_show = min(8, len(pipeline.memory))
@@ -65,7 +65,7 @@ def draw_memory(screen, font, pipeline):
         screen.blit(text_surf, (50 + (i % 4) * 250, y + 30 + (i // 4) * 30))
 
 def draw_vault(screen, font, pipeline):
-    start_y = MEMORY_START_Y + 80  # un poco debajo de la memoria
+    start_y = MEMORY_START_Y + 120  # un poco debajo de la memoria
     header = font.render("Bóveda de Claves (Vault):", True, FONT_COLOR)
     screen.blit(header, (50, start_y))
 
@@ -74,7 +74,7 @@ def draw_vault(screen, font, pipeline):
         slot_surf = font.render(slot_text, True, FONT_COLOR)
         screen.blit(slot_surf, (50, start_y + 30 + slot_index * 30))
 
-def run_pipeline(program, pipeline=None):
+def run_pipeline(program):
     """
     Ejecuta el pipeline con Pygame y, al cerrar, devuelve la lista `encrypted_blocks`
     extraída de pipeline.memory. Cada bloque ocupa dos posiciones consecutivas.
@@ -85,8 +85,7 @@ def run_pipeline(program, pipeline=None):
     font = pygame.font.Font(None, FONT_SIZE)
     clock = pygame.time.Clock()
 
-    if pipeline is None:
-        pipeline = TEAPipeline()
+    pipeline = TEAPipeline()
 
     # Fijamos DATAPTR = 0 para que STORE_CRYPT con ('DATA_IDX', offset)
     # escriba en pipeline.memory[offset].

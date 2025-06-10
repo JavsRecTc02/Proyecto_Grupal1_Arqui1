@@ -71,7 +71,7 @@ class TEACPU:
         # ------------------------------------------
         # Memoria 4KB para datos y claves
         # ------------------------------------------
-        self.memory = [0] * 2048  # 4096 bytes organizados en words de 32b
+        self.memory = [0] * 1024  # 4096 bytes organizados en words de 32b
         
         # ------------------------------------------
         # Modos de Direccionamiento 
@@ -118,10 +118,10 @@ class TEACPU:
             'exec': lambda lbl, reg: self._crypt_loop(lbl, reg)
         },
 
-        # Movimiento de datos
-        'ASN': {
+        # MOV -> Falta cambiarlo 
+        'MOV': {
             'fmt': ('Rd', 'Imm/Reg'),
-            'exec': lambda dst, src: self._ASN(dst, src)
+            'exec': lambda dst, src: self._mov(dst, src)
         },
 
         # Instrucciones de Bóveda de Llaves
@@ -154,87 +154,71 @@ class TEACPU:
 
 
     # ==================== OPERACIONES DE TEA ====================
-
     def _tea_sbox(self, rd, rs1, rs2):
-        """
-        (Rs1 << 4) + Rs2 → Rd
-        """
+        """(Rs1 << 4) + Rs2 → Rd (Fusión SHL+ADD)"""
         self.reg[rd] = ((self.reg[rs1] << 4) + self.reg[rs2]) & 0xFFFFFFFF
 
-    def _tea_mix(self, rd, rs1, rs2, imm=0, xor_only=False):
-        """
-        Dos modos:
-        - xor_only=False ("sum-xor"): result = (Rs1 + SUM) ^ ((Rs2 >> 5) + imm)
-        - xor_only=True  ("xor-only"):  result = Rs1 ^ Rs2
-        Siempre deja Rd = result & 0xFFFFFFFF
-        """
-        mask32 = 0xFFFFFFFF
-        if xor_only:
-            result = self.reg[rs1] ^ self.reg[rs2]
-        else:
-            term1 = (self.reg[rs1] + self.reg['SUM']) & mask32
-            term2 = ((self.reg[rs2] >> 5) + imm) & mask32
-            result = term1 ^ term2
-        self.reg[rd] = result & mask32
+    def _tea_mix(self, rd, rs1, rs2, imm):
+        """Rd ^= (Rs1 + SUM) ^ (Rs2 >> 5) + Imm"""
+        term1 = (self.reg[rs1] + self.reg['SUM']) & 0xFFFFFFFF
+        term2 = (self.reg[rs2] >> 5) + imm
+        self.reg[rd] ^= (term1 ^ term2) & 0xFFFFFFFF
 
     def _crypt_round(self, v0_reg, v1_reg, kptr, direction):
         """
-        Ronda de TEA dejando T0/T1 en registros (coincide con GUI).
+        Ejecuta una única ronda de TEA.
+        v0_reg, v1_reg: cadenas 'V0' y 'V1'
+        kptr: (no lo usamos porque cargamos K0..K3 en registros directamente)
+        direction: 1 = cifrar, 0 = descifrar
         """
-        mask32 = 0xFFFFFFFF
-
+        # Extraer valores de registro
         v0 = self.reg[v0_reg]
         v1 = self.reg[v1_reg]
-        k0, k1 = self.reg['K0'], self.reg['K1']
-        k2, k3 = self.reg['K2'], self.reg['K3']
-        sum_val = self.reg['SUM']
+        k0 = self.reg['K0']
+        k1 = self.reg['K1']
+        k2 = self.reg['K2']
+        k3 = self.reg['K3']
+        mask32 = 0xFFFFFFFF
+
+        sum_val = self.reg['SUM']  # suma acumulada hasta justo antes de esta ronda
 
         if direction == 1:
-            # 1) SUM += DELTA
+            # CIFRADO: primero incrementar sum
             sum_val = (sum_val + self.DELTA) & mask32
-            self.reg['SUM'] = sum_val
 
-            # v0 += ((v1<<4)+k0) ^ (v1+SUM) ^ ((v1>>5)+k1)
-            self.reg['V1'], self.reg['K0'] = v1, k0
-            self._tea_sbox('T0', 'V1', 'K0')               # T0 = (v1<<4)+k0
-            self.reg['V1'] = v1
-            self._tea_mix('T1', 'V1', 'V1', imm=k1)        # T1 = (v1+SUM) ^ ((v1>>5)+k1)
-            self._tea_mix('T0', 'T0', 'T1', xor_only=True) # T0 = T0 ^ T1
-            v0 = (v0 + self.reg['T0']) & mask32
+            # v0 += ((v1 << 4) + k0) ^ (v1 + sum) ^ ((v1 >> 5) + k1)
+            t0 = ((v1 << 4) + k0) & mask32
+            t1 = (v1 + sum_val) & mask32
+            t2 = ((v1 >> 5) + k1) & mask32
+            v0 = (v0 + (t0 ^ t1 ^ t2)) & mask32
 
-            # v1 += ((v0<<4)+k2) ^ (v0+SUM) ^ ((v0>>5)+k3)
-            self.reg['V0'], self.reg['K2'] = v0, k2
-            self._tea_sbox('T0', 'V0', 'K2')               # T0 = (v0<<4)+k2
-            self.reg['V0'] = v0
-            self._tea_mix('T1', 'V0', 'V0', imm=k3)        # T1 = (v0+SUM) ^ ((v0>>5)+k3)
-            self._tea_mix('T1', 'T1', 'T0', xor_only=True) # T1 = T1 ^ T0
-            v1 = (v1 + self.reg['T1']) & mask32
+            # v1 += ((v0 << 4) + k2) ^ (v0 + sum) ^ ((v0 >> 5) + k3)
+            t0 = ((v0 << 4) + k2) & mask32
+            t1 = (v0 + sum_val) & mask32
+            t2 = ((v0 >> 5) + k3) & mask32
+            v1 = (v1 + (t0 ^ t1 ^ t2)) & mask32
 
         else:
-            # v1 -= ((v0<<4)+k2) ^ (v0+SUM) ^ ((v0>>5)+k3)
-            self.reg['V0'], self.reg['K2'] = v0, k2
-            self._tea_sbox('T0', 'V0', 'K2')
-            self.reg['V0'] = v0
-            self._tea_mix('T1', 'V0', 'V0', imm=k3)
-            self._tea_mix('T0', 'T0', 'T1', xor_only=True)
-            v1 = (v1 - self.reg['T0']) & mask32
+            # DESCIFRADO: primero restar de v1/v0 usando sum
+            t0 = ((v0 << 4) + k2) & mask32
+            t1 = (v0 + sum_val) & mask32
+            t2 = ((v0 >> 5) + k3) & mask32
+            v1 = (v1 - (t0 ^ t1 ^ t2)) & mask32
 
-            # v0 -= ((v1<<4)+k0) ^ (v1+SUM) ^ ((v1>>5)+k1)
-            self.reg['V1'], self.reg['K0'] = v1, k0
-            self._tea_sbox('T0', 'V1', 'K0')
-            self.reg['V1'] = v1
-            self._tea_mix('T1', 'V1', 'V1', imm=k1)
-            self._tea_mix('T0', 'T0', 'T1', xor_only=True)
-            v0 = (v0 - self.reg['T0']) & mask32
+            t0 = ((v1 << 4) + k0) & mask32
+            t1 = (v1 + sum_val) & mask32
+            t2 = ((v1 >> 5) + k1) & mask32
+            v0 = (v0 - (t0 ^ t1 ^ t2)) & mask32
 
-            # SUM -= DELTA
+            # luego decrementamos sum
             sum_val = (sum_val - self.DELTA) & mask32
-            self.reg['SUM'] = sum_val
 
-        # Guardar V0/V1 y asegurar T0/T1 en el banco de registros
+        # Guardar retornos
         self.reg[v0_reg] = v0
         self.reg[v1_reg] = v1
-        # (T0 y T1 ya están en mayúsculas en self.reg)
+        self.reg['SUM'] = sum_val
+
+
 
     # ==================== ACCESO A MEMORIA  ====================
     def _load_crypt(self, rd, mode):
@@ -268,8 +252,8 @@ class TEACPU:
             # Ajusta el PC al índice numérico de la instrucción
             self.reg['PC'] = target_pc - 1
 
-    # ==================== ASNIMIENTO DE DATOS ====================
-    def _ASN(self, dst, src):
+    # ==================== MOVIMIENTO DE DATOS ====================
+    def _mov(self, dst, src):
     # src puede ser entero (inmediato) o nombre de registro
         value = src if isinstance(src, int) else self.reg[src]
         self.reg[dst] = value & 0xFFFFFFFF
