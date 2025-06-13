@@ -78,6 +78,7 @@ def run_pipeline(program, pipeline=None):
     """
     Ejecuta el pipeline con Pygame y, al cerrar, devuelve la lista `encrypted_blocks`
     extraída de pipeline.memory. Cada bloque ocupa dos posiciones consecutivas.
+    Se soporta modo automático y modo paso a paso con tecla "s" y "espacio" para avanzar.
     """
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -88,92 +89,84 @@ def run_pipeline(program, pipeline=None):
     if pipeline is None:
         pipeline = TEAPipeline()
 
-    # Fijamos DATAPTR = 0 para que STORE_CRYPT con ('DATA_IDX', offset)
-    # escriba en pipeline.memory[offset].
     pipeline.reg['DATAPTR'] = 0
-    pipeline.reg['KEYPTR'] = 0x100  # Ajusta según dónde guardes la clave
-
+    pipeline.reg['KEYPTR'] = 0x100
     pipeline.load_program(program)
 
-    # Contamos cuántas instrucciones STORE_CRYPT hay:
     store_count = sum(1 for instr in program if instr.get('opcode') == 'STORE_CRYPT')
-    num_blocks = store_count // 2  # cada bloque produce dos STORE_CRYPT
-
-    # ─────────── Ajustamos el tamaño de pipeline.memory ───────────
-    # Para que STORE_CRYPT nunca escriba fuera de rango.
+    num_blocks = store_count // 2
     pipeline.memory = [0] * (num_blocks * 2)
 
-    # ----------------------- PARÁMETROS DE VELOCIDAD -----------------------
-    # Número de ciclos de pipeline que ejecutamos antes de cada refresco de pantalla
-    CYCLES_PER_FRAME = 500
+    # Parámetros de velocidad y control
+    CYCLES_PER_FRAME = 500  # Ciclos automaticos
+    step_mode = False       # Modo SteByStep
+    step_requested = False
 
     running = True
     while running:
-        # Procesamos eventos
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_s:
+                    step_mode = not step_mode
+                elif event.key == pygame.K_SPACE:
+                    step_requested = True
 
-        # Ejecutamos varios ciclos antes de dibujar (avanza muy rápido)
-        for _ in range(CYCLES_PER_FRAME):
-            if pipeline.reg['PC'] < len(program) or any(pipeline.pipeline.values()):
-                pipeline.execute_cycle(program)
-            else:
-                print(f"SUM final = 0x{pipeline.reg['SUM']:08X}")
-                running = False
-                break
+        # Ejecución de ciclos
+        if step_mode:
+            if step_requested:
+                if pipeline.reg['PC'] < len(program) or any(pipeline.pipeline.values()):
+                    pipeline.execute_cycle(program)
+                else:
+                    print(f"SUM final = 0x{pipeline.reg['SUM']:08X}")
+                    running = False
+                step_requested = False
+        else:
+            for _ in range(CYCLES_PER_FRAME):
+                if pipeline.reg['PC'] < len(program) or any(pipeline.pipeline.values()):
+                    pipeline.execute_cycle(program)
+                else:
+                    print(f"SUM final = 0x{pipeline.reg['SUM']:08X}")
+                    running = False
+                    break
 
-        # Dibujo de fondo y secciones
+        # Dibujar todo
         screen.fill(BG_COLOR)
         draw_pipeline(screen, font, pipeline)
         draw_registers(screen, font, pipeline)
         draw_memory(screen, font, pipeline)
         draw_vault(screen, font, pipeline)
 
-        # ------------------ BARRA DE PROGRESO ------------------
+        # Mostrar modo arriba
+        mode_text = ("Modo: StepByStep, avanzar con tecla espacio"
+                     if step_mode else f"Modo: Automático ({CYCLES_PER_FRAME} ciclos/frame)")
+        mode_surf = font.render(mode_text, True, FONT_COLOR)
+        screen.blit(mode_surf, (50, 10))
+
+        # Barra de progreso (igual que antes)
         total_insn = len(program)
-        fetched_insn = pipeline.reg['PC']
-        if fetched_insn > total_insn:
-            fetched_insn = total_insn
-
-        progress_pct = fetched_insn / total_insn if total_insn > 0 else 1.0
-
-        bar_margin = 50
+        fetched_insn = min(pipeline.reg['PC'], total_insn)
+        pct = fetched_insn / total_insn if total_insn else 1.0
+        bar_margin, bar_height = 50, 20
         bar_width = WIDTH - 2 * bar_margin
-        bar_height = 20
-        bar_x = bar_margin
-        bar_y = HEIGHT - bar_height - 30
-
-        # Track (gris oscuro)
-        pygame.draw.rect(screen,
-                         (50, 50, 50),
-                         (bar_x, bar_y, bar_width, bar_height),
-                         border_radius=5)
-
-        # Filled (verde)
-        filled_width = int(bar_width * progress_pct)
-        pygame.draw.rect(screen,
-                         (0, 200, 0),
-                         (bar_x, bar_y, filled_width, bar_height),
-                         border_radius=5)
-
-        # Texto de porcentaje centrado
-        pct_text = f"{int(progress_pct * 100)} %"
-        pct_surf = font.render(pct_text, True, FONT_COLOR)
-        pct_rect = pct_surf.get_rect(center=(bar_x + bar_width // 2, bar_y + bar_height // 2))
+        bar_x, bar_y = bar_margin, HEIGHT - bar_height - 30
+        pygame.draw.rect(screen, (50,50,50), (bar_x, bar_y, bar_width, bar_height), border_radius=5)
+        pygame.draw.rect(screen, ACTIVE_COLOR, (bar_x, bar_y, int(bar_width * pct), bar_height), border_radius=5)
+        pct_surf = font.render(f"{int(pct*100)} %", True, FONT_COLOR)
+        pct_rect = pct_surf.get_rect(center=(bar_x + bar_width//2, bar_y + bar_height//2))
         screen.blit(pct_surf, pct_rect)
-        # -------------------------------------------------------
 
         pygame.display.flip()
         clock.tick(30)
 
     pygame.quit()
 
-    # Una vez cerrada la ventana, recogemos los bloques de memoria
+    # Recolectar bloques procesados
     encrypted_blocks = []
     for i in range(num_blocks):
-        v0_enc = pipeline.memory[i * 2] & 0xFFFFFFFF
-        v1_enc = pipeline.memory[i * 2 + 1] & 0xFFFFFFFF
+        v0_enc = pipeline.memory[i*2] & 0xFFFFFFFF
+        v1_enc = pipeline.memory[i*2 + 1] & 0xFFFFFFFF
         encrypted_blocks.append((v0_enc, v1_enc))
 
     return encrypted_blocks
